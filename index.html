@@ -243,25 +243,51 @@
                 }
             };
 
-            // Address Search Debounce
-            useEffect(() => {
-                const timer = setTimeout(() => {
-                    if (address.length > 5 && view === 'landing') {
-                        setIsSearching(true);
-                        fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}`)
-                            .then(res => res.json())
-                            .then(data => {
-                                setSearchResults(data);
-                                setIsSearching(false);
-                            })
-                            .catch(err => {
-                                console.error(err);
-                                setIsSearching(false);
-                            });
+            // Helper: Clean Address Formatter
+            const formatAddressLabel = (result) => {
+                // 1. Try to construct a clean US-style string from parts if available
+                if (result.address) {
+                    const { house_number, road, city, town, village, hamlet, state, postcode } = result.address;
+                    const place = city || town || village || hamlet;
+                    
+                    // Standard "123 Main St, City, State 55555"
+                    if (house_number && road && place && state) {
+                        return `${house_number} ${road}, ${place}, ${state} ${postcode || ''}`;
                     }
-                }, 500);
-                return () => clearTimeout(timer);
-            }, [address, view]);
+                    
+                    // Fallback for just street/city
+                    if (road && place && state) {
+                        return `${road}, ${place}, ${state}`;
+                    }
+                }
+
+                // 2. Fallback regex cleanup for raw display_name
+                // Fixes "297, Oak Ridge..." -> "297 Oak Ridge..."
+                // Removes ", United States"
+                let clean = result.display_name.replace(/^(\d+),\s+/, '$1 '); 
+                clean = clean.replace(/,\s*United States$/, '');
+                clean = clean.replace(/,\s*USA$/, '');
+                
+                return clean;
+            };
+
+            // Manual Search Trigger
+            const executeSearch = () => {
+                if (address.length > 3) {
+                    setIsSearching(true);
+                    setSearchResults([]);
+                    fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&addressdetails=1`)
+                        .then(res => res.json())
+                        .then(data => {
+                            setSearchResults(data);
+                            setIsSearching(false);
+                        })
+                        .catch(err => {
+                            console.error(err);
+                            setIsSearching(false);
+                        });
+                }
+            };
 
             // --- MAP INIT (PERSISTENT MAP) ---
             useEffect(() => {
@@ -295,14 +321,26 @@
                 }
             }, []);
 
+            // --- Update View Location & Invalidate Size ---
+            // Handles both initial search load AND switching back from AI generation
             useEffect(() => {
                 if (mapInstanceRef.current) {
+                    // Always force resize when view changes
                     setTimeout(() => { mapInstanceRef.current.invalidateSize(); }, 100);
-                    if (coordinates && view !== 'landing') {
-                        mapInstanceRef.current.setView(coordinates, 19);
+                    
+                    if (view !== 'landing') {
+                        // PRIORITY 1: Post-AI Generation - Fit to the custom boundary
+                        if (boundaryPoints.length >= 3) {
+                             const bounds = L.latLngBounds(boundaryPoints);
+                             mapInstanceRef.current.fitBounds(bounds, { padding: [50, 50], maxZoom: 21 });
+                        } 
+                        // PRIORITY 2: Initial Load - Center on specific coordinates at high zoom (Zoom 20)
+                        else if (coordinates) {
+                            mapInstanceRef.current.setView(coordinates, 20);
+                        }
                     }
                 }
-            }, [view, coordinates]);
+            }, [view]); // Trigger only when View State changes
 
             // Cursor Management
             useEffect(() => {
@@ -315,6 +353,15 @@
             }, [wizardStep, isDrawingBed]);
 
             // --- Handlers ---
+            const handleAddressSelect = (result) => {
+                const lat = parseFloat(result.lat);
+                const lon = parseFloat(result.lon);
+                setCoordinates([lat, lon]);
+                // Use the clean formatter for the input box
+                setAddress(formatAddressLabel(result));
+                setSearchResults([]);
+            };
+
             const handleMapClick = (e) => {
                 const { lat, lng } = e.latlng;
                 const currentStep = wizardStepRef.current;
@@ -357,13 +404,10 @@
 
             // --- Skip AI Function ---
             const skipAiGeneration = () => {
-                // Manually transition to planning mode without AI overlay
-                // Clean up temp layers
                 tempDrawingLayerRef.current.clearLayers();
                 houseLayerRef.current.clearLayers();
                 hardscapeLayerRef.current.clearLayers();
                 
-                // Keep boundary mask
                 maskLayerRef.current.clearLayers(); 
                 const world = [[90, -180], [90, 180], [-90, 180], [-90, -180]];
                 L.polygon([world, boundaryPoints], { color: 'transparent', fillColor: '#000000', fillOpacity: 0.75 }).addTo(maskLayerRef.current);
@@ -460,12 +504,9 @@
                     const canvas = await html2canvas(mapElement, { useCORS: true, allowTaint: true, ignoreElements: (element) => element.classList.contains('ui-layer') });
                     const base64Image = canvas.toDataURL('image/png').split(',')[1];
                     
-                    // Use Hardcoded Key if userKey is empty, otherwise use userKey (allow override)
                     const apiKey = userApiKey || GERTENS_API_KEY; 
-                    
                     if (!apiKey) { showToast("Please enter API Key in settings.", "error"); setIsGenerating(false); setShowSettings(true); return; }
                     
-                    // REFINED PROMPT: BALANCED ARTISTIC ILLUSTRATION
                     const promptText = `
                         Transform this marked-up satellite image into a beautiful, professional landscape architectural illustration (Top-Down Plan View).
 
@@ -501,11 +542,10 @@
                         L.polygon([world, boundaryPoints], { color: 'transparent', fillColor: '#FFFFFF', fillOpacity: 0.8 }).addTo(maskLayerRef.current);
                         houseLayerRef.current.clearLayers(); hardscapeLayerRef.current.clearLayers();
                         setWizardStep(0); 
-                        setView('planning'); // Show menu ONLY here
+                        setView('planning'); 
                     } else { showToast("Could not generate image. API returned no data.", "error"); }
                 } catch (error) {
                     console.error("AI Gen Error:", error);
-                    // Smart Error Parsing for Links
                     if (error.message.includes("Generative Language API")) {
                         const urlMatch = error.message.match(/https?:\/\/[^\s]+/);
                         const url = urlMatch ? urlMatch[0] : "https://console.developers.google.com/apis/api/generativelanguage.googleapis.com";
@@ -546,11 +586,28 @@
                                     <h1 className="text-4xl md:text-6xl font-bold tracking-tight">GARDEN PLANNER</h1>
                                     <p className="text-xl text-blue-100 font-mono">Build your dream landscape on a satellite blueprint.</p>
                                     <div className="relative max-w-lg mx-auto w-full">
-                                        <div className="relative">
-                                            <input type="text" placeholder="Enter your home address..." className="w-full p-4 pr-12 rounded-none border-2 border-white bg-transparent text-white placeholder-blue-200 focus:outline-none focus:bg-blue-900/50 transition font-mono" value={address} onChange={(e) => setAddress(e.target.value)} />
-                                            {isSearching && <div className="absolute right-4 top-1/2 transform -translate-y-1/2"><svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg></div>}
+                                        <div className="relative flex items-center">
+                                            <input 
+                                                type="text" 
+                                                placeholder="Enter your home address..." 
+                                                className="w-full p-4 pr-16 rounded-none border-2 border-white bg-transparent text-white placeholder-blue-200 focus:outline-none focus:bg-blue-900/50 transition font-mono"
+                                                value={address}
+                                                onChange={(e) => setAddress(e.target.value)}
+                                                onKeyDown={(e) => e.key === 'Enter' && executeSearch()}
+                                            />
+                                            <button 
+                                                onClick={executeSearch}
+                                                className="absolute right-2 top-1/2 transform -translate-y-1/2 p-2 bg-white text-blue-900 rounded-full hover:bg-blue-50 transition"
+                                                title="Search Address"
+                                            >
+                                                {isSearching ? (
+                                                    <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                                                ) : (
+                                                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+                                                )}
+                                            </button>
                                         </div>
-                                        {searchResults.length > 0 && <div className="absolute top-full left-0 right-0 bg-white text-black mt-2 rounded shadow-xl max-h-60 overflow-y-auto">{searchResults.map((result, idx) => (<div key={idx} className="p-3 hover:bg-gray-100 cursor-pointer border-b text-left" onClick={() => { setCoordinates([parseFloat(result.lat), parseFloat(result.lon)]); setAddress(result.display_name); setSearchResults([]); }}>{result.display_name}</div>))}</div>}
+                                        {searchResults.length > 0 && <div className="absolute top-full left-0 right-0 bg-white text-black mt-2 rounded shadow-xl max-h-60 overflow-y-auto">{searchResults.map((result, idx) => (<div key={idx} className="p-3 hover:bg-gray-100 cursor-pointer border-b text-left" onClick={() => handleAddressSelect(result)}>{formatAddressLabel(result)}</div>))}</div>}
                                     </div>
                                     {coordinates && <button onClick={() => { setView('locate'); setTimeout(() => setWizardStep(1), 500); }} className="bg-white text-blue-900 px-8 py-3 font-bold hover:bg-blue-50 transition transform hover:scale-105 shadow-lg tracking-widest">LOCATE MY LANDSCAPE</button>}
                                 </div>
