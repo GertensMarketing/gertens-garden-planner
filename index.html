@@ -84,6 +84,14 @@
             background-color: #222; 
         }
         
+        /* Cursor Styles */
+        .cursor-crosshair {
+            cursor: crosshair !important;
+        }
+        .cursor-crosshair .leaflet-interactive {
+            cursor: crosshair !important;
+        }
+
         /* UI Overlay Z-Index */
         .ui-layer {
             z-index: 1000;
@@ -132,6 +140,10 @@
     <script type="text/babel">
         const { useState, useEffect, useRef, useMemo } = React;
 
+        // --- Configuration ---
+        // Hardcoded API Key for domain-restricted usage
+        const GERTENS_API_KEY = "AIzaSyAuF6DqYS39aTRykOEDXL08_Fj_6NSV2xY";
+
         // --- Mock Data --- 
         const PLANT_CATEGORIES = [
             { id: 'annual', name: 'Annual Plant', icon: '🌻', color: '#FCD34D' },
@@ -175,6 +187,9 @@
             const [coordinates, setCoordinates] = useState(null); 
             const [shoppingList, setShoppingList] = useState([]);
             
+            // Notification State
+            const [notification, setNotification] = useState(null); // { msg, type, action: { label, onClick } }
+
             // Map References
             const mapRef = useRef(null);
             const mapInstanceRef = useRef(null);
@@ -220,6 +235,14 @@
             const [searchResults, setSearchResults] = useState([]);
             const [isSearching, setIsSearching] = useState(false);
 
+            // Helper for Notifications
+            const showToast = (msg, type = 'info', action = null) => {
+                setNotification({ msg, type, action });
+                if (!action) {
+                    setTimeout(() => setNotification(null), 6000);
+                }
+            };
+
             // Address Search Debounce
             useEffect(() => {
                 const timer = setTimeout(() => {
@@ -241,17 +264,15 @@
             }, [address, view]);
 
             // --- MAP INIT (PERSISTENT MAP) ---
-            // This runs ONCE on mount. The map is NEVER destroyed.
             useEffect(() => {
                 if (mapRef.current && !mapInstanceRef.current) {
-                    
                     const map = L.map(mapRef.current, {
                         zoomControl: false,
                         attributionControl: false,
                         preferCanvas: true,
                         zoomAnimation: false,
                         fadeAnimation: true
-                    }).setView([44.85, -93.05], 19); // Default init
+                    }).setView([44.85, -93.05], 19); 
 
                     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
                         attribution: 'Tiles &copy; Esri',
@@ -259,7 +280,6 @@
                         maxNativeZoom: 19
                     }).addTo(map);
 
-                    // Initialize groups
                     aiLayerRef.current = L.layerGroup().addTo(map);
                     maskLayerRef.current = L.layerGroup().addTo(map);
                     houseLayerRef.current = L.layerGroup().addTo(map);
@@ -271,58 +291,41 @@
                     mapInstanceRef.current = map;
                     map.on('click', (e) => handleMapClick(e));
 
-                    // Force resize just in case
                     setTimeout(() => { map.invalidateSize(); }, 500);
                 }
             }, []);
 
-            // --- Update View Location & Invalidate Size ---
-            // This monitors 'view' changes to ensure the map redraws when revealed.
             useEffect(() => {
                 if (mapInstanceRef.current) {
-                    // Slight delay to allow the overlay to disappear before redrawing
-                    setTimeout(() => {
-                        mapInstanceRef.current.invalidateSize();
-                    }, 100);
-                    
-                    // If we have coordinates, fly to them
+                    setTimeout(() => { mapInstanceRef.current.invalidateSize(); }, 100);
                     if (coordinates && view !== 'landing') {
                         mapInstanceRef.current.setView(coordinates, 19);
                     }
                 }
             }, [view, coordinates]);
 
-            // --- Cursor Management (Decoupled from React Render) ---
-            // This updates the cursor style manually without triggering a re-render of the map div
+            // Cursor Management
             useEffect(() => {
                 if (mapRef.current) {
                     const shouldHaveCrosshair = (wizardStep > 0 && wizardStep < 4) || isDrawingBed;
                     mapRef.current.style.cursor = shouldHaveCrosshair ? 'crosshair' : 'default';
-                    // We also need to force the leaflet-interactive elements to inherit this
                     const interactives = mapRef.current.querySelectorAll('.leaflet-interactive');
-                    interactives.forEach(el => {
-                        el.style.cursor = shouldHaveCrosshair ? 'crosshair' : 'pointer';
-                    });
+                    interactives.forEach(el => { el.style.cursor = shouldHaveCrosshair ? 'crosshair' : 'pointer'; });
                 }
             }, [wizardStep, isDrawingBed]);
 
             // --- Handlers ---
-            
             const handleMapClick = (e) => {
                 const { lat, lng } = e.latlng;
                 const currentStep = wizardStepRef.current;
                 const isBed = isDrawingBedRef.current;
                 const placingPlant = isPlacingPlantRef.current;
 
-                if (currentStep === 1) {
-                    setBoundaryPoints(prev => { const n = [...prev, [lat, lng]]; renderTempPolyline(n, 'white'); return n; });
-                } else if (currentStep === 2) {
-                    setHousePoints(prev => { const n = [...prev, [lat, lng]]; renderTempPolyline(n, '#4b5563'); return n; });
-                } else if (currentStep === 3) {
-                    setHardscapePoints(prev => { const n = [...prev, [lat, lng]]; renderTempPolyline(n, '#9ca3af'); return n; });
-                } else if (isBed) {
-                    setBedPoints(prev => { const n = [...prev, [lat, lng]]; renderTempPolyline(n, '#8B4513'); return n; });
-                } else if (placingPlant) {
+                if (currentStep === 1) setBoundaryPoints(prev => { const n = [...prev, [lat, lng]]; renderTempPolyline(n, 'white'); return n; });
+                else if (currentStep === 2) setHousePoints(prev => { const n = [...prev, [lat, lng]]; renderTempPolyline(n, '#4b5563'); return n; });
+                else if (currentStep === 3) setHardscapePoints(prev => { const n = [...prev, [lat, lng]]; renderTempPolyline(n, '#9ca3af'); return n; });
+                else if (isBed) setBedPoints(prev => { const n = [...prev, [lat, lng]]; renderTempPolyline(n, '#8B4513'); return n; });
+                else if (placingPlant) {
                     const newItem = { id: Date.now(), type: 'plant', category: placingPlant, lat: lat, lng: lng, confirmed: false, name: 'Unspecified Plant', sizeLabel: '1 Gallon', radius: getRadiusInMeters(21), sunlight: 'Full Sun' };
                     setItems(prev => [...prev, newItem]);
                     setIsPlacingPlant(null);
@@ -335,17 +338,15 @@
                 tempDrawingLayerRef.current.clearLayers();
                 if (points.length > 0) {
                     L.polygon(points, { color: color, fill: false, dashArray: '5, 5', weight: 2 }).addTo(tempDrawingLayerRef.current);
-                    points.forEach(p => {
-                        L.circleMarker(p, { radius: 3, color: 'yellow', fillColor: color, fillOpacity: 1 }).addTo(tempDrawingLayerRef.current);
-                    });
+                    points.forEach(p => { L.circleMarker(p, { radius: 3, color: 'yellow', fillColor: color, fillOpacity: 1 }).addTo(tempDrawingLayerRef.current); });
                 }
             };
             
             const handleUndo = () => {
-                if (wizardStep === 1) { setBoundaryPoints(prev => { const n = prev.slice(0, -1); renderTempPolyline(n, 'white'); return n; }); }
-                else if (wizardStep === 2) { setHousePoints(prev => { const n = prev.slice(0, -1); renderTempPolyline(n, '#4b5563'); return n; }); }
-                else if (wizardStep === 3) { setHardscapePoints(prev => { const n = prev.slice(0, -1); renderTempPolyline(n, '#9ca3af'); return n; }); }
-                else if (isDrawingBed) { setBedPoints(prev => { const n = prev.slice(0, -1); renderTempPolyline(n, '#8B4513'); return n; }); }
+                if (wizardStep === 1) setBoundaryPoints(prev => { const n = prev.slice(0, -1); renderTempPolyline(n, 'white'); return n; });
+                else if (wizardStep === 2) setHousePoints(prev => { const n = prev.slice(0, -1); renderTempPolyline(n, '#4b5563'); return n; });
+                else if (wizardStep === 3) setHardscapePoints(prev => { const n = prev.slice(0, -1); renderTempPolyline(n, '#9ca3af'); return n; });
+                else if (isDrawingBed) setBedPoints(prev => { const n = prev.slice(0, -1); renderTempPolyline(n, '#8B4513'); return n; });
             };
             
             const handlePreviousStep = () => {
@@ -355,7 +356,7 @@
             };
 
             const confirmWizardStep1 = () => {
-                if (boundaryPoints.length < 3) { alert("Please select at least 3 points."); return; }
+                if (boundaryPoints.length < 3) { showToast("Please select at least 3 points.", "error"); return; }
                 tempDrawingLayerRef.current.clearLayers();
                 const world = [[90, -180], [90, 180], [-90, 180], [-90, -180]];
                 L.polygon([world, boundaryPoints], { color: 'transparent', fillColor: '#000000', fillOpacity: 0.75 }).addTo(maskLayerRef.current);
@@ -365,21 +366,21 @@
             };
 
             const confirmWizardStep2 = () => {
-                if (housePoints.length > 0 && housePoints.length < 3) { alert("Please finish house shape."); return; }
+                if (housePoints.length > 0 && housePoints.length < 3) { showToast("Finish the house shape (3+ points) or clear it.", "error"); return; }
                 if (housePoints.length >= 3) L.polygon(housePoints, { color: 'transparent', fillColor: '#374151', fillOpacity: 0.8 }).addTo(houseLayerRef.current);
                 tempDrawingLayerRef.current.clearLayers();
                 setWizardStep(3);
             };
 
             const confirmWizardStep3 = () => {
-                if (hardscapePoints.length > 0 && hardscapePoints.length < 3) { alert("Please finish hardscape."); return; }
+                if (hardscapePoints.length > 0 && hardscapePoints.length < 3) { showToast("Finish the hardscape shape (3+ points) or clear it.", "error"); return; }
                 if (hardscapePoints.length >= 3) L.polygon(hardscapePoints, { color: 'transparent', fillColor: '#9ca3af', fillOpacity: 0.8 }).addTo(hardscapeLayerRef.current);
                 tempDrawingLayerRef.current.clearLayers();
                 setWizardStep(4);
             };
 
             const finishBed = () => {
-                if (bedPoints.length < 3) { alert("Beds need 3+ points"); return; }
+                if (bedPoints.length < 3) { showToast("Beds need at least 3 points", "error"); return; }
                 const newBed = { id: Date.now(), type: 'bed', points: bedPoints, sunlight: 'Full Sun', name: 'Garden Bed' };
                 setItems(prev => [...prev, newBed]);
                 setBedPoints([]);
@@ -441,14 +442,20 @@
                     const mapElement = document.getElementById('map');
                     const canvas = await html2canvas(mapElement, { useCORS: true, allowTaint: true, ignoreElements: (element) => element.classList.contains('ui-layer') });
                     const base64Image = canvas.toDataURL('image/png').split(',')[1];
-                    const apiKey = userApiKey || ""; 
-                    if (!apiKey && typeof __app_id === 'undefined') { alert("Please enter API Key."); setIsGenerating(false); setShowSettings(true); return; }
+                    
+                    // Use Hardcoded Key if userKey is empty, otherwise use userKey (allow override)
+                    const apiKey = userApiKey || GERTENS_API_KEY; 
+                    
+                    if (!apiKey) { showToast("Please enter API Key in settings.", "error"); setIsGenerating(false); setShowSettings(true); return; }
+                    
                     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`, {
                         method: 'POST', headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ contents: [{ parts: [{ text: "Turn this map markup into a high-quality, top-down architectural landscape design illustration. Blue line=property. Dark gray=house. Light gray=pavement. Professional garden plan style." }, { inlineData: { mimeType: "image/png", data: base64Image } }] }], generationConfig: { responseModalities: ["IMAGE"] } })
                     });
+                    
                     const data = await response.json();
                     if (data.error) throw new Error(data.error.message);
+                    
                     const resultBase64 = data.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
                     if (resultBase64) {
                         const bounds = mapInstanceRef.current.getBounds();
@@ -460,16 +467,40 @@
                         L.polygon([world, boundaryPoints], { color: 'transparent', fillColor: '#FFFFFF', fillOpacity: 0.8 }).addTo(maskLayerRef.current);
                         houseLayerRef.current.clearLayers(); hardscapeLayerRef.current.clearLayers();
                         setWizardStep(0); setView('planning');
-                    } else { alert("Could not generate image."); }
-                } catch (error) { alert("Error: " + error.message); } finally { setIsGenerating(false); }
+                    } else { showToast("Could not generate image. API returned no data.", "error"); }
+                } catch (error) {
+                    console.error("AI Gen Error:", error);
+                    // Smart Error Parsing for Links
+                    if (error.message.includes("Generative Language API")) {
+                        const urlMatch = error.message.match(/https?:\/\/[^\s]+/);
+                        const url = urlMatch ? urlMatch[0] : "https://console.developers.google.com/apis/api/generativelanguage.googleapis.com";
+                        showToast("API not enabled. Click here to fix.", "error", { label: "ENABLE API", onClick: () => window.open(url, '_blank') });
+                    } else {
+                        showToast("Error: " + error.message, "error");
+                    }
+                } finally { setIsGenerating(false); }
             };
             
-            const toggleAiView = () => { if (aiImageGenerated) { /* toggle */ } else { generateAiIllustration(); } };
+            const toggleAiView = () => { if (aiImageGenerated) { /* toggle logic pending */ } else { generateAiIllustration(); } };
 
             return (
                 <div className="relative w-full h-full">
-                    {/* MAP IS ALWAYS RENDERED. NO DYNAMIC CLASSNAMES HERE. */}
+                    {/* MAP IS ALWAYS RENDERED */}
                     <div id="map" ref={mapRef}></div>
+
+                    {/* TOAST NOTIFICATIONS */}
+                    {notification && (
+                        <div className="absolute top-20 left-1/2 transform -translate-x-1/2 ui-layer z-[2000] animate-fade-in-up w-full max-w-sm px-4">
+                            <div className={`shadow-xl rounded-lg p-4 flex items-center justify-between border-l-4 ${notification.type === 'error' ? 'bg-red-50 border-red-500 text-red-700' : 'bg-blue-50 border-blue-500 text-blue-700'}`}>
+                                <div className="flex-1 text-sm font-medium mr-2">{notification.msg}</div>
+                                {notification.action ? (
+                                    <button onClick={() => { notification.action.onClick(); setNotification(null); }} className="bg-white text-xs px-3 py-1 rounded border border-current font-bold uppercase hover:opacity-75">{notification.action.label}</button>
+                                ) : (
+                                    <button onClick={() => setNotification(null)} className="opacity-50 hover:opacity-100">✕</button>
+                                )}
+                            </div>
+                        </div>
+                    )}
 
                     {/* LANDING PAGE IS JUST AN OVERLAY */}
                     {view === 'landing' && (
